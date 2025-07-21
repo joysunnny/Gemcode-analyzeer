@@ -1,0 +1,20 @@
+// AnalysisResult.java
+package com.example.analyzer.model;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class AnalysisResult {
+    public List<ControllerMethodInfo> controllerMethods = new ArrayList<>();
+    public List<String> errors = new ArrayList<>(); // To log any analysis errors
+
+    // Add other top-level aggregated data if needed
+
+    public void addControllerMethod(ControllerMethodInfo info) {
+        this.controllerMethods.add(info);
+    }
+
+    public void addError(String error) {
+        this.errors.add(error);
+    }
+}
