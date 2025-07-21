@@ -1,0 +1,16 @@
+// PropertyValueInfo.java
+package com.example.analyzer.model;
+
+public class PropertyValueInfo {
+    public String propertyKey;
+    public String propertyValue;
+    public String defaultValue; // If specified in @Value(value="key:defaultValue")
+    public String annotationExpression; // The full @Value expression
+
+    public PropertyValueInfo(String propertyKey, String propertyValue, String defaultValue, String annotationExpression) {
+        this.propertyKey = propertyKey;
+        this.propertyValue = propertyValue;
+        this.defaultValue = defaultValue;
+        this.annotationExpression = annotationExpression;
+    }
+}
