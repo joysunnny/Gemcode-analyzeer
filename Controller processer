@@ -1,0 +1,111 @@
+// ControllerProcessor.java
+package com.example.analyzer.processor;
+
+import com.example.analyzer.core.AnalysisContext;
+import com.example.analyzer.model.ControllerMethodInfo;
+import com.example.analyzer.model.ParameterFlowInfo;
+import com.example.analyzer.model.PropertyValueInfo;
+import com.example.analyzer.util.JpaMethodNameParser;
+import com.example.analyzer.util.QueryAnalyzer;
+import spoon.processing.AbstractProcessor;
+import spoon.reflect.code.CtExpression;
+import spoon.reflect.declaration.CtAnnotation;
+import spoon.reflect.declaration.CtClass;
+import spoon.reflect.declaration.CtMethod;
+import spoon.reflect.declaration.CtParameter;
+import spoon.reflect.reference.CtTypeReference;
+import spoon.reflect.factory.Factory;
+
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.beans.factory.annotation.Value;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class ControllerProcessor extends AbstractProcessor<CtClass<?>> {
+
+    private final AnalysisContext context;
+    private final Factory factory;
+
+    // Regex for @Value expressions: ${key:defaultValue} or ${key}
+    private static final Pattern VALUE_PATTERN = Pattern.compile("^\\s*\\$\\{\\s*([a-zA-Z0-9._-]+)(?::\\s*([^}]*))?\\s*}\\s*$");
+
+
+    public ControllerProcessor(AnalysisContext context) {
+        this.context = context;
+        this.factory = getFactory(); // Get factory from Spoon processor
+    }
+
+    @Override
+    public boolean is );
+                if (valueAnnotation != null) {
+                    CtExpression<?> valueExpr = valueAnnotation.getValue("value");
+                    if (valueExpr != null) {
+                        String valueString = valueExpr.prettyprint().replace("\"", ""); // Remove quotes
+                        Matcher matcher = VALUE_PATTERN.matcher(valueString);
+                        if (matcher.matches()) {
+                            String propertyKey = matcher.group(1);
+                            String defaultValue = matcher.group(2); // Can be null
+                            String propertyValue = context.getPropertyFileLoader().getPropertyValue(propertyKey);
+
+                            String finalValue = (propertyValue != null) ? propertyValue : defaultValue;
+
+                            ParameterFlowInfo flowInfo = new ParameterFlowInfo(
+                                param.getSimpleName(),
+                                param.getType().prettyprint(),
+                                "PROPERTY_VALUE",
+                                "Value from property file: " + propertyKey + (finalValue != null ? " (resolved: " + finalValue + ")" : ""),
+                                valueString
+                            );
+                            flowInfo.addTransformation("Resolved from @Value annotation");
+                            controllerMethodInfo.addTracedParameter(flowInfo);
+                        } else {
+                            // Direct literal @Value (e.g., @Value("hello"))
+                            ParameterFlowInfo flowInfo = new ParameterFlowInfo(
+                                param.getSimpleName(),
+                                param.getType().prettyprint(),
+                                "LITERAL",
+                                "Direct @Value literal: " + valueString,
+                                valueString
+                            );
+                             controllerMethodInfo.addTracedParameter(flowInfo);
+                        }
+                    }
+                } else {
+                    // Regular method parameter - start tracing from here
+                    ParameterFlowInfo flowInfo = new ParameterFlowInfo(
+                        param.getSimpleName(),
+                        param.getType().prettyprint(),
+                        "SERVICE_METHOD_PARAMETER", // Initial origin is the controller method parameter
+                        param.getSimpleName(),
+                        param.prettyprint()
+                    );
+                    controllerMethodInfo.addTracedParameter(flowInfo);
+                }
+            }
+
+            // Start deep tracing from the method body (inter-procedural)
+            MethodFlowAnalyzer flowAnalyzer = new MethodFlowAnalyzer(context);
+            MethodCallInfo rootMethodCall = flowAnalyzer.analyzeMethodBody(
+                method,
+                method.getBody(),
+                new ArrayList<>() // No current argument to trace yet at method level
+            );
+
+            // Integrate the method call analysis results into the ControllerMethodInfo
+            // For now, we'll just add the first level of calls. A more complex integration
+            // would connect the traced parameters to arguments of these calls.
+            if(rootMethodCall != null) {
+                 controllerMethodInfo.addMethodCall(rootMethodCall);
+            }
+
+            context.getAnalysisResult().addControllerMethod(controllerMethodInfo);
+        }
+    }
+}
