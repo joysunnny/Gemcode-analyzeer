@@ -1,0 +1,14 @@
+// ConditionInfo.java
+package com.example.analyzer.model;
+
+public class ConditionInfo {
+    public String type; // e.g., "IF", "TRY_CATCH_BLOCK", "CATCH_CLAUSE"
+    public String expression; // The boolean condition for if, or exception type for catch
+    public String lineContent; // The full line where condition occurred
+
+    public ConditionInfo(String type, String expression, String lineContent) {
+        this.type = type;
+        this.expression = expression;
+        this.lineContent = lineContent;
+    }
+}
