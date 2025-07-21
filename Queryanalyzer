@@ -1,0 +1,45 @@
+// QueryAnalyzer.java (from previous example)
+package com.example.analyzer.util;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class QueryAnalyzer {
+    private static final Pattern NAMED_PARAMETER_PATTERN = Pattern.compile(":\\s*([a-zA-Z_][a-zA-Z0-9_]*)");
+    private static final Pattern POSITIONAL_PARAMETER_PATTERN = Pattern.compile("\\?([0-9]+)");
+
+    // Pattern to identify simple column assignments in WHERE clauses (e.g., e.name = :name, id = ?1)
+    // This is still heuristic but better than just "=". Handles "e.fieldName" as well.
+    private static final Pattern COLUMN_ASSIGNMENT_PATTERN =
+        Pattern.compile("([a-zA-Z_][a-zA-Z0-9_.]*)\\s*[=<>!~]+\\s*([:?][a-zA-Z0-9_]+)");
+
+    /**
+     * Analyzes a JPQL or native SQL query string to find mappings between query parameters
+     * (e.g., :paramName, ?1) and the likely column names they are compared against.
+     *
+     * @param queryString The JPQL or native SQL query.
+     * @param isNativeQuery True if it's a native SQL query, false for JPQL.
+     * @return A map where key is the query parameter name (without : or ?) and value is the inferred column name.
+     */
+    public static Map<String, String> analyze(String queryString, boolean isNativeQuery) {
+        Map<String, String> paramToColumnMap = new HashMap<>();
+
+        Matcher matcher = COLUMN_ASSIGNMENT_PATTERN.matcher(queryString);
+        while (matcher.find()) {
+            String columnPart = matcher.group(1); // e.g., "e.name" or "id"
+            String paramPart = matcher.group(2);  // e.g., ":entityName" or "?1"
+
+            // Extract actual column name (handle aliases like e.name -> name)
+            String columnName = columnPart.contains(".") ?
+                                columnPart.substring(columnPart.lastIndexOf('.') + 1) :
+                                columnPart;
+
+            String paramName = paramPart.substring(1); // Remove leading ':' or '?'
+
+            paramToColumnMap.put(paramName, columnName);
+        }
+        return paramToColumnMap;
+    }
+}
