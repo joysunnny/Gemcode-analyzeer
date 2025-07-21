@@ -1,19 +1,15 @@
-// ControllerProcessor.java
 package com.example.analyzer.processor;
 
 import com.example.analyzer.core.AnalysisContext;
 import com.example.analyzer.model.ControllerMethodInfo;
 import com.example.analyzer.model.ParameterFlowInfo;
-import com.example.analyzer.model.PropertyValueInfo;
-import com.example.analyzer.util.JpaMethodNameParser;
-import com.example.analyzer.util.QueryAnalyzer;
 import spoon.processing.AbstractProcessor;
 import spoon.reflect.code.CtExpression;
 import spoon.reflect.declaration.CtAnnotation;
 import spoon.reflect.declaration.CtClass;
+import spoon.reflect.declaration.CtField; // Added for field processing
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.declaration.CtParameter;
-import spoon.reflect.reference.CtTypeReference;
 import spoon.reflect.factory.Factory;
 
 import org.springframework.stereotype.Controller;
@@ -21,90 +17,166 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping; // Added common HTTP methods
+import org.springframework.web.bind.annotation.DeleteMapping; // Added common HTTP methods
 import org.springframework.beans.factory.annotation.Value;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class ControllerProcessor extends AbstractProcessor<CtClass<?>> {
 
     private final AnalysisContext context;
-    private final Factory factory;
+    private Factory factory; // Initialized in init() by Spoon
 
     // Regex for @Value expressions: ${key:defaultValue} or ${key}
     private static final Pattern VALUE_PATTERN = Pattern.compile("^\\s*\\$\\{\\s*([a-zA-Z0-9._-]+)(?::\\s*([^}]*))?\\s*}\\s*$");
 
-
     public ControllerProcessor(AnalysisContext context) {
         this.context = context;
-        this.factory = getFactory(); // Get factory from Spoon processor
+        // The factory is provided by Spoon's processing framework, usually in init()
+        // We'll get it on first use or override init() if needed.
+    }
+
+    // Spoon calls init() before processing starts, perfect for getting the factory
+    @Override
+    public void init() {
+        super.init();
+        this.factory = getFactory();
     }
 
     @Override
-    public boolean is );
-                if (valueAnnotation != null) {
-                    CtExpression<?> valueExpr = valueAnnotation.getValue("value");
-                    if (valueExpr != null) {
-                        String valueString = valueExpr.prettyprint().replace("\"", ""); // Remove quotes
-                        Matcher matcher = VALUE_PATTERN.matcher(valueString);
-                        if (matcher.matches()) {
-                            String propertyKey = matcher.group(1);
-                            String defaultValue = matcher.group(2); // Can be null
-                            String propertyValue = context.getPropertyFileLoader().getPropertyValue(propertyKey);
+    public boolean is </T> void process(CtClass<?> ctClass) {
+        // Ensure factory is initialized.
+        if (factory == null) {
+            factory = getFactory(); // Fallback, though init() should handle it
+        }
 
-                            String finalValue = (propertyValue != null) ? propertyValue : defaultValue;
+        boolean isController = ctClass.getAnnotation(factory.Type().createReference(RestController.class)) != null ||
+                               ctClass.getAnnotation(factory.Type().createReference(Controller.class)) != null;
 
-                            ParameterFlowInfo flowInfo = new ParameterFlowInfo(
-                                param.getSimpleName(),
-                                param.getType().prettyprint(),
-                                "PROPERTY_VALUE",
-                                "Value from property file: " + propertyKey + (finalValue != null ? " (resolved: " + finalValue + ")" : ""),
-                                valueString
-                            );
-                            flowInfo.addTransformation("Resolved from @Value annotation");
-                            controllerMethodInfo.addTracedParameter(flowInfo);
-                        } else {
-                            // Direct literal @Value (e.g., @Value("hello"))
-                            ParameterFlowInfo flowInfo = new ParameterFlowInfo(
-                                param.getSimpleName(),
-                                param.getType().prettyprint(),
-                                "LITERAL",
-                                "Direct @Value literal: " + valueString,
-                                valueString
-                            );
-                             controllerMethodInfo.addTracedParameter(flowInfo);
-                        }
+        if (!isController) {
+            return; // Not a controller class, skip
+        }
+
+        // --- Process @Value fields in the Controller class ---
+        // These fields also represent a flow of data into the controller.
+        for (CtField<?> field : ctClass.getFields()) {
+            CtAnnotation<?> valueAnnotation = field.getAnnotation(factory.Type().createReference(Value.class));
+            if (valueAnnotation != null) {
+                CtExpression<?> valueExpr = valueAnnotation.getValue("value");
+                if (valueExpr != null) {
+                    String valueString = valueExpr.prettyprint().replace("\"", ""); // Remove quotes
+                    Matcher matcher = VALUE_PATTERN.matcher(valueString);
+                    String propertyKey = null;
+                    String defaultValue = null;
+                    String finalValue = null;
+                    String flowOriginDescription = null;
+                    String flowOriginType = null;
+
+                    if (matcher.matches()) {
+                        propertyKey = matcher.group(1);
+                        defaultValue = matcher.group(2); // Can be null
+                        String propertyValue = context.getPropertyFileLoader().getPropertyValue(propertyKey);
+
+                        finalValue = (propertyValue != null) ? propertyValue : defaultValue;
+                        flowOriginType = "PROPERTY_VALUE";
+                        flowOriginDescription = "Value from property file: " + propertyKey + (finalValue != null ? " (resolved: " + finalValue + ")" : "");
+                    } else {
+                        // Direct literal @Value (e.g., @Value("hello"))
+                        flowOriginType = "LITERAL";
+                        flowOriginDescription = "Direct @Value literal for field: " + valueString;
+                        finalValue = valueString; // The literal itself is the value
                     }
-                } else {
-                    // Regular method parameter - start tracing from here
+
                     ParameterFlowInfo flowInfo = new ParameterFlowInfo(
-                        param.getSimpleName(),
-                        param.getType().prettyprint(),
-                        "SERVICE_METHOD_PARAMETER", // Initial origin is the controller method parameter
-                        param.getSimpleName(),
-                        param.prettyprint()
+                        field.getSimpleName(), // Use field name as parameter name
+                        field.getType().prettyprint(),
+                        flowOriginType,
+                        flowOriginDescription,
+                        valueString // The raw annotation expression
                     );
-                    controllerMethodInfo.addTracedParameter(flowInfo);
+                    flowInfo.addTransformation("Resolved from @Value annotation");
+                    // Add this field's resolved value as a 'traced parameter' for the controller
+                    // as it's a source of external configuration data.
+                    // This data needs to be associated with *all* methods within the controller
+                    // if they potentially use this field. For now, we'll associate it with the controller class.
+                    // A more advanced approach might track where these fields are *used* in methods.
+                    // For simplicity, we can collect them at the class level or if used in a method, link there.
+                    // For this iteration, we'll link it to the controller method if it's referenced within it.
+                    // The current setup of `ControllerMethodInfo` is per method, so we need to add a way
+                    // to track class-level @Value or ensure `MethodFlowAnalyzer` picks up field reads.
+                    // Let's modify `MethodFlowAnalyzer` to detect `@Value` field reads.
+                    // This `ParameterFlowInfo` for `@Value` fields is more for *documentation* than live flow tracing.
+                    // We'll put it here for now, but `MethodFlowAnalyzer` will be the primary flow tracer.
+                    // context.getAnalysisResult().addControllerMethod(new ControllerMethodInfo(...)).addTracedParameter(flowInfo);
+                    // This is not the right place to add it, as `ControllerMethodInfo` is per method.
+                    // We need to pass these resolved values to the `MethodFlowAnalyzer` if they are relevant to a method.
+                    // For now, let's just make sure `MethodFlowAnalyzer` can identify usages of `@Value` fields.
                 }
+            }
+        }
+
+
+        // --- Process each method in the controller class ---
+        for (CtMethod<?> method : ctClass.getMethods()) {
+            // Filter for request mapping methods (GetMapping, PostMapping, RequestMapping, etc.)
+            boolean isRequestMappingMethod =
+                method.getAnnotation(factory.Type().createReference(RequestMapping.class)) != null ||
+                method.getAnnotation(factory.Type().createReference(GetMapping.class)) != null ||
+                method.getAnnotation(factory.Type().createReference(PostMapping.class)) != null ||
+                method.getAnnotation(factory.Type().createReference(PutMapping.class)) != null ||
+                method.getAnnotation(factory.Type().createReference(DeleteMapping.class)) != null;
+
+
+            if (!isRequestMappingMethod) {
+                continue; // Not a relevant request mapping method, skip
+            }
+
+            ControllerMethodInfo controllerMethodInfo = new ControllerMethodInfo(
+                ctClass.getQualifiedName(),
+                method.getSimpleName(),
+                method.getSignature(),
+                (method.getBody() != null) ? method.getBody().prettyprint() : ""
+            );
+
+            // Collect initial parameters to trace for this method
+            List<ParameterFlowInfo> initialMethodParametersForTrace = new ArrayList<>();
+
+            // Analyze method parameters (e.g., @PathVariable, @RequestBody, @RequestParam)
+            for (CtParameter<?> param : method.getParameters()) {
+                // For direct method parameters, their origin is the service method parameter itself
+                ParameterFlowInfo flowInfo = new ParameterFlowInfo(
+                    param.getSimpleName(),
+                    param.getType().prettyprint(),
+                    "SERVICE_METHOD_PARAMETER", // Initial origin is the controller method parameter
+                    param.getSimpleName(),
+                    param.prettyprint()
+                );
+                controllerMethodInfo.addTracedParameter(flowInfo); // Add to the controller method info for output
+                initialMethodParametersForTrace.add(flowInfo); // Also pass to the flow analyzer for deep tracing
             }
 
             // Start deep tracing from the method body (inter-procedural)
             MethodFlowAnalyzer flowAnalyzer = new MethodFlowAnalyzer(context);
-            MethodCallInfo rootMethodCall = flowAnalyzer.analyzeMethodBody(
+
+            // Analyze the method body, starting with its parameters
+            MethodCallInfo rootMethodCallAnalysis = flowAnalyzer.analyzeMethodBody(
                 method,
                 method.getBody(),
-                new ArrayList<>() // No current argument to trace yet at method level
+                initialMethodParametersForTrace, // Pass method parameters to start tracing their flow
+                ctClass.getFields() // Also pass class fields to resolve @Value and other field usages
             );
 
-            // Integrate the method call analysis results into the ControllerMethodInfo
-            // For now, we'll just add the first level of calls. A more complex integration
-            // would connect the traced parameters to arguments of these calls.
-            if(rootMethodCall != null) {
-                 controllerMethodInfo.addMethodCall(rootMethodCall);
+            // The `rootMethodCallAnalysis` represents the entire call graph starting from this controller method.
+            // Add it to the controller method's collected calls.
+            if(rootMethodCallAnalysis != null) {
+                 controllerMethodInfo.addMethodCall(rootMethodCallAnalysis);
             }
 
+            // Finally, add the collected information for this controller method to the overall analysis result.
             context.getAnalysisResult().addControllerMethod(controllerMethodInfo);
         }
     }
