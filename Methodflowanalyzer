@@ -1,0 +1,43 @@
+// MethodCallInfo.java
+package com.example.analyzer.model;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import java.util.ArrayList;
+import java.util.List;
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class MethodCallInfo {
+    public String className;
+    public String methodName;
+    public String methodSignature;
+    public String methodBody; // Body of the called method (if available in model)
+    public String callExpression; // How it was called, e.g., "myService.process(data)"
+    public List<VariableAssignmentInfo> assignments = new ArrayList<>();
+    public List<ConditionInfo> conditions = new ArrayList<>();
+    public List<DbColumnMappingInfo> dbMappings = new ArrayList<>();
+    public List<MethodCallInfo> nestedCalls = new ArrayList<>(); // For recursive calls
+
+    public MethodCallInfo(String className, String methodName, String methodSignature, String callExpression, String methodBody) {
+        this.className = className;
+        this.methodName = methodName;
+        this.methodSignature = methodSignature;
+        this.callExpression = callExpression;
+        this.methodBody = methodBody;
+    }
+
+    public void addAssignment(VariableAssignmentInfo info) {
+        this.assignments.add(info);
+    }
+
+    public void addCondition(ConditionInfo info) {
+        this.conditions.add(info);
+    }
+
+    public void addDbMapping(DbColumnMappingInfo info) {
+        this.dbMappings.add(info);
+    }
+
+    public void addNestedCall(MethodCallInfo info) {
+        this.nestedCalls.add(info);
+    }
+}
