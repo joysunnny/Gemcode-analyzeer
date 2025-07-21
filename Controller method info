@@ -1,0 +1,25 @@
+// ControllerMethodInfo.java
+package com.example.analyzer.model;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class ControllerMethodInfo {
+    public String className;
+    public String methodName;
+    public String methodSignature;
+    public String methodBody; // Entire body for context
+    public List<ParameterFlowInfo> tracedParameters = new ArrayList<>();
+
+    // Constructor
+    public ControllerMethodInfo(String className, String methodName, String methodSignature, String methodBody) {
+        this.className = className;
+        this.methodName = methodName;
+        this.methodSignature = methodSignature;
+        this.methodBody = methodBody;
+    }
+
+    public void addTracedParameter(ParameterFlowInfo info) {
+        this.tracedParameters.add(info);
+    }
+}
