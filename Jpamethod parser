@@ -1,0 +1,101 @@
+// JpaMethodNameParser.java (from previous example, slightly adjusted for better return type consistency)
+package com.example.analyzer.util;
+
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class JpaMethodNameParser {
+
+    private static final Set<String> OPERATOR_KEYWORDS = new HashSet<>(Arrays.asList(
+        "Is", "Equals", "Not", "IsNot", "Like", "StartingWith", "EndingWith", "Containing",
+        "LessThan", "LessThanEqual", "GreaterThan", "GreaterThanEqual", "Between", "IsNull",
+        "IsNotNull", "In", "NotIn", "True", "False", "After", "Before",
+        "And", "Or" // Included here to handle split logic more consistently
+    ));
+
+    /**
+     * Parses a Spring Data JPA method name to infer column names and their corresponding parameter names.
+     * This is a heuristic and will not cover all edge cases or complex JPA features.
+     *
+     * @param methodName The name of the Spring Data JPA repository method.
+     * @return A map of inferred parameter names (from method signature) to inferred column names.
+     */
+    public static Map<String, String> inferColumns(String methodName) {
+        Map<String, String> inferredMapping = new LinkedHashMap<>(); // Use LinkedHashMap to preserve order
+
+        if (!(methodName.startsWith("find") || methodName.startsWith("get") || methodName.startsWith("read") ||
+              methodName.startsWith("count") || methodName.startsWith("exists") || methodName.startsWith("delete"))) {
+            return inferredMapping; // Not a typical query method
+        }
+
+        String criteriaPart = methodName;
+        int byIndex = methodName.indexOf("By");
+        if (byIndex != -1) {
+            criteriaPart = methodName.substring(byIndex + 2); // Get "NameAndValue..."
+        } else {
+            // Handle cases like 'findById' where 'By' is implied after 'find' prefix
+            if (methodName.startsWith("find")) {
+                String afterFind = methodName.substring("find".length());
+                if (!afterFind.isEmpty() && !afterFind.matches("All|Distinct")) {
+                    String propName = Character.toLowerCase(afterFind.charAt(0)) + afterFind.substring(1);
+                    inferredMapping.put(propName, propName); // Param name and column name are the same
+                    return inferredMapping;
+                }
+            }
+            return inferredMapping;
+        }
+
+        // Split by "And" or "Or" to get individual property clauses
+        String[] clauses = criteriaPart.split("And|Or");
+
+        for (String clause : clauses) {
+            if (clause.isEmpty()) continue;
+
+            String currentProperty = clause;
+            // Remove operator keywords from the end
+            for (String keyword : OPERATOR_KEYWORDS) {
+                if (currentProperty.endsWith(keyword)) {
+                    currentProperty = currentProperty.substring(0, currentProperty.length() - keyword.length());
+                    break; // Only one operator per property for simplicity
+                }
+            }
+
+            if (!currentProperty.isEmpty()) {
+                // Convert camelCase to potential snake_case column name and camelCase parameter name
+                // e.g., "UserName" -> param "userName", column "user_name"
+                StringBuilder paramNameBuilder = new StringBuilder();
+                StringBuilder columnNameBuilder = new StringBuilder();
+
+                String[] segments = currentProperty.split("(?=\\p{Upper})"); // Split by uppercase letters
+                for (int i = 0; i < segments.length; i++) {
+                    String segment = segments[i];
+                    if (segment.isEmpty()) continue;
+
+                    String lowerSegment = Character.toLowerCase(segment.charAt(0)) + segment.substring(1);
+
+                    // Build parameter name (camelCase)
+                    if (i == 0) {
+                        paramNameBuilder.append(lowerSegment);
+                    } else {
+                        paramNameBuilder.append(Character.toUpperCase(segment.charAt(0))).append(segment.substring(1));
+                    }
+
+                    // Build column name (snake_case, typical in databases)
+                    columnNameBuilder.append(lowerSegment);
+                    if (i < segments.length - 1) {
+                        columnNameBuilder.append("_");
+                    }
+                }
+                String inferredParam = paramNameBuilder.toString();
+                String inferredColumn = columnNameBuilder.toString();
+
+                // Add to map if parameter name is unique
+                if (!inferredParam.isEmpty() && !inferredMapping.containsKey(inferredParam)) {
+                    inferredMapping.put(inferredParam, inferredColumn);
+                }
+            }
+        }
+        return inferredMapping;
+    }
+}
