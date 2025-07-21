@@ -1,0 +1,73 @@
+// EntityColumnMapper.java (from previous example, uses jakarta.persistence)
+package com.example.analyzer.util;
+
+import spoon.reflect.CtModel;
+import spoon.reflect.declaration.CtAnnotation;
+import spoon.reflect.declaration.CtClass;
+import spoon.reflect.declaration.CtField;
+import spoon.reflect.factory.Factory;
+import spoon.reflect.visitor.filter.TypeFilter;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Table;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+
+public class EntityColumnMapper {
+    private final CtModel model;
+    private final Map<String, Map<String, String>> entityFieldToColumnCache = new HashMap<>(); // Entity_FQN -> (Field_Name -> Column_Name)
+
+    public EntityColumnMapper(CtModel model) {
+        this.model = model;
+        cacheEntityColumns();
+    }
+
+    private void cacheEntityColumns() {
+        Factory factory = model.getFactory();
+        model.getElements(new TypeFilter<>(CtClass.class)).forEach(ctClass -> {
+            if (ctClass.getAnnotation(factory.Type().createReference(Entity.class)) != null) {
+                Map<String, String> fieldMap = new HashMap<>();
+                // Default table name logic (not strictly needed for column mapping, but good practice)
+                String tableName = ctClass.getSimpleName().toLowerCase();
+                CtAnnotation<?> tableAnnotation = ctClass.getAnnotation(factory.Type().createReference(Table.class));
+                if (tableAnnotation != null && tableAnnotation.getValue("name") != null) {
+                    tableName = tableAnnotation.getValue("name").prettyprint().replace("\"", "");
+                }
+
+                for (CtField<?> field : ctClass.getFields()) {
+                    String fieldName = field.getSimpleName();
+                    String columnName = fieldName; // Default to field name (camelCase)
+
+                    CtAnnotation<?> columnAnnotation = field.getAnnotation(factory.Type().createReference(Column.class));
+                    if (columnAnnotation != null && columnAnnotation.getValue("name") != null) {
+                        columnName = columnAnnotation.getValue("name").prettyprint().replace("\"", "");
+                    } else {
+                        // Spring Boot convention: camelCase field -> snake_case column if no @Column annotation
+                        columnName = convertCamelCaseToSnakeCase(fieldName);
+                    }
+                    fieldMap.put(fieldName, columnName);
+                }
+                entityFieldToColumnCache.put(ctClass.getQualifiedName(), fieldMap);
+            }
+        });
+    }
+
+    private String convertCamelCaseToSnakeCase(String camelCaseString) {
+        Pattern p = Pattern.compile("(?<=[a-z])(?=[A-Z])");
+        return p.matcher(camelCaseString).replaceAll("_").toLowerCase();
+    }
+
+    /**
+     * Retrieves the actual database column name for a given entity field.
+     *
+     * @param entityFQN The fully qualified name of the entity class.
+     * @param fieldName The Java field name in the entity.
+     * @return An Optional containing the database column name, or empty if not found.
+     */
+    public Optional<String> getColumnName(String entityFQN, String fieldName) {
+        return Optional.ofNullable(entityFieldToColumnCache.get(entityFQN))
+                       .map(map -> map.get(fieldName));
+    }
+}
