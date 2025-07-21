@@ -1,0 +1,57 @@
+// PropertyFileLoader.java
+package com.example.analyzer.util;
+
+import org.apache.commons.io.FileUtils;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+
+public class PropertyFileLoader {
+    private final Map<String, String> propertiesMap = new HashMap<>();
+
+    public PropertyFileLoader(String baseDirPath) {
+        loadProperties(baseDirPath);
+    }
+
+    private void loadProperties(String baseDirPath) {
+        File baseDir = new File(baseDirPath);
+        if (!baseDir.exists() || !baseDir.isDirectory()) {
+            System.err.println("Error: Base directory for properties does not exist or is not a directory: " + baseDirPath);
+            return;
+        }
+
+        try {
+            // Find all .properties files recursively
+            Collection<File> propertyFiles = FileUtils.listFiles(
+                baseDir,
+                new String[]{"properties"},
+                true // recursive
+            );
+
+            for (File file : propertyFiles) {
+                Properties props = new Properties();
+                try (FileReader reader = new FileReader(file)) {
+                    props.load(reader);
+                    props.forEach((key, value) -> propertiesMap.put(key.toString(), value.toString()));
+                    System.out.println("Loaded properties from: " + file.getAbsolutePath());
+                } catch (IOException e) {
+                    System.err.println("Error reading property file " + file.getAbsolutePath() + ": " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error finding property files in " + baseDirPath + ": " + e.getMessage());
+        }
+    }
+
+    public Map<String, String> getProperties() {
+        return Collections.unmodifiableMap(propertiesMap);
+    }
+
+    public String getPropertyValue(String key) {
+        return propertiesMap.get(key);
+    }
+}
