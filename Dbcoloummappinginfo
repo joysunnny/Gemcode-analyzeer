@@ -1,16 +1,23 @@
-// PropertyValueInfo.java
+// DbColumnMappingInfo.java
 package com.example.analyzer.model;
 
-public class PropertyValueInfo {
-    public String propertyKey;
-    public String propertyValue;
-    public String defaultValue; // If specified in @Value(value="key:defaultValue")
-    public String annotationExpression; // The full @Value expression
+import com.fasterxml.jackson.annotation.JsonInclude;
 
-    public PropertyValueInfo(String propertyKey, String propertyValue, String defaultValue, String annotationExpression) {
-        this.propertyKey = propertyKey;
-        this.propertyValue = propertyValue;
-        this.defaultValue = defaultValue;
-        this.annotationExpression = annotationExpression;
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class DbColumnMappingInfo {
+    public String repositoryClass;
+    public String repositoryMethod;
+    public String repositoryParameterName; // The parameter in the repo method
+    public String mappedColumnName; // The actual DB column name
+    public String queryExpression; // The @Query string if applicable
+    public String mappingSource; // e.g., "QUERY_ANNOTATION", "METHOD_NAME_DERIVATION"
+
+    public DbColumnMappingInfo(String repositoryClass, String repositoryMethod, String repositoryParameterName, String mappedColumnName, String queryExpression, String mappingSource) {
+        this.repositoryClass = repositoryClass;
+        this.repositoryMethod = repositoryMethod;
+        this.repositoryParameterName = repositoryParameterName;
+        this.mappedColumnName = mappedColumnName;
+        this.queryExpression = queryExpression;
+        this.mappingSource = mappingSource;
     }
 }
