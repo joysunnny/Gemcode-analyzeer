@@ -1,0 +1,37 @@
+// AnalysisContext.java
+package com.example.analyzer.core;
+
+import com.example.analyzer.model.AnalysisResult;
+import com.example.analyzer.util.EntityColumnMapper;
+import com.example.analyzer.util.PropertyFileLoader;
+import spoon.reflect.CtModel;
+
+public class AnalysisContext {
+    private final AnalysisResult analysisResult;
+    private final PropertyFileLoader propertyFileLoader;
+    private final EntityColumnMapper entityColumnMapper;
+    private final CtModel spoonModel; // Keep a reference to the Spoon model
+
+    public AnalysisContext(String projectRootPath, CtModel model) {
+        this.analysisResult = new AnalysisResult();
+        this.propertyFileLoader = new PropertyFileLoader(projectRootPath);
+        this.entityColumnMapper = new EntityColumnMapper(model);
+        this.spoonModel = model;
+    }
+
+    public AnalysisResult getAnalysisResult() {
+        return analysisResult;
+    }
+
+    public PropertyFileLoader getPropertyFileLoader() {
+        return propertyFileLoader;
+    }
+
+    public EntityColumnMapper getEntityColumnMapper() {
+        return entityColumnMapper;
+    }
+
+    public CtModel getSpoonModel() {
+        return spoonModel;
+    }
+}
