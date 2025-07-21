@@ -1,0 +1,387 @@
+package com.example.analyzer.processor;
+
+import com.example.analyzer.core.AnalysisContext;
+import com.example.analyzer.model.*;
+import com.example.analyzer.util.JpaMethodNameParser;
+import com.example.analyzer.util.QueryAnalyzer;
+import spoon.reflect.code.*;
+import spoon.reflect.declaration.*;
+import spoon.reflect.reference.CtExecutableReference;
+import spoon.reflect.reference.CtTypeReference;
+import spoon.reflect.visitor.CtScanner;
+import spoon.reflect.visitor.filter.TypeFilter;
+import spoon.reflect.factory.Factory;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.stereotype.Repository;
+import org.springframework.beans.factory.annotation.Value;
+
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+// This is NOT a Spoon Processor in the traditional sense for Launcher.processWith()
+// It's a helper class that performs data flow analysis for a given method body.
+public class MethodFlowAnalyzer extends CtScanner {
+
+    private final AnalysisContext context;
+    // Use a stack to keep track of the current method call being analyzed.
+    // The top of the stack is the 'current' context for adding assignments, conditions, etc.
+    private final Stack<MethodCallInfo> callStack = new Stack<>();
+    // A map to keep track of the ParameterFlowInfo objects for expressions we're currently tracing.
+    // Key: prettyprint() of the CtExpression being tracked.
+    // Value: The ParameterFlowInfo representing its origin and transformations.
+    private final Map<String, ParameterFlowInfo> currentlyTracedFlows = new HashMap<>();
+
+    private CtMethod<?> currentMethodContext; // The method whose body we are currently analyzing
+    private Factory factory; // Spoon factory, to be initialized
+
+    // Regex for @Value expressions: ${key:defaultValue} or ${key}
+    private static final Pattern VALUE_PATTERN = Pattern.compile("^\\s*\\$\\{\\s*([a-zA-Z0-9._-]+)(?::\\s*([^}]*))?\\s*}\\s*$");
+
+
+    public MethodFlowAnalyzer(AnalysisContext context) {
+        this.context = context;
+        this.factory = context.getSpoonModel().getFactory(); // Get factory from context's Spoon model
+    }
+
+    /**
+     * Analyzes a method's body to trace data flow and collect method call info.
+     *
+     * @param method The method being analyzed.
+     * @param body The method's body (CtBlock).
+     * @param initialFlowsToTrace Any specific ParameterFlowInfo objects (e.g., method parameters) to start tracing from.
+     * @param classFields Fields of the class containing this method, for @Value resolution.
+     * @return A MethodCallInfo representing the method itself, containing its internal analysis.
+     */
+    public MethodCallInfo analyzeMethodBody(
+            CtMethod<?> method,
+            CtBlock<?> body,
+            List<ParameterFlowInfo> initialFlowsToTrace,
+            List<CtField<?>> classFields) {
+
+        this.currentMethodContext = method;
+        this.callStack.clear(); // Ensure clean slate for new method analysis
+        this.currentlyTracedFlows.clear(); // Clear previous runs
+
+        // Populate initial expressions to trace (method parameters)
+        initialFlowsToTrace.forEach(info -> currentlyTracedFlows.put(info.flowOriginRawExpression, info));
+
+        // Also, populate flows for @Value fields at the class level
+        // These are effectively "inputs" to the method if they are read.
+        for (CtField<?> field : classFields) {
+            CtAnnotation<?> valueAnnotation = field.getAnnotation(factory.Type().createReference(Value.class));
+            if (valueAnnotation != null) {
+                CtExpression<?> valueExpr = valueAnnotation.getValue("value");
+                if (valueExpr != null) {
+                    String valueString = valueExpr.prettyprint().replace("\"", "");
+                    Matcher matcher = VALUE_PATTERN.matcher(valueString);
+                    String propertyKey = null;
+                    String defaultValue = null;
+                    String finalValue = null;
+                    String flowOriginDescription = null;
+                    String flowOriginType = null;
+
+                    if (matcher.matches()) {
+                        propertyKey = matcher.group(1);
+                        defaultValue = matcher.group(2);
+                        String propertyValue = context.getPropertyFileLoader().getPropertyValue(propertyKey);
+
+                        finalValue = (propertyValue != null) ? propertyValue : defaultValue;
+                        flowOriginType = "PROPERTY_VALUE";
+                        flowOriginDescription = "Value from property file: " + propertyKey + (finalValue != null ? " (resolved: " + finalValue + ")" : "");
+                    } else {
+                        flowOriginType = "LITERAL";
+                        flowOriginDescription = "Direct @Value literal for field: " + valueString;
+                        finalValue = valueString;
+                    }
+
+                    ParameterFlowInfo flowInfo = new ParameterFlowInfo(
+                        field.getSimpleName(),
+                        field.getType().prettyprint(),
+                        flowOriginType,
+                        flowOriginDescription,
+                        valueString
+                    );
+                    flowInfo.addTransformation("Resolved from @Value annotation for field: " + field.getSimpleName());
+                    // Add this to currentlyTracedFlows, so any reads of this field can be traced.
+                    currentlyTracedFlows.put(field.getSimpleName(), flowInfo);
+                    currentlyTracedFlows.put(field.getQualifiedName(), flowInfo); // For fully qualified reads
+                }
+            }
+        }
+
+
+        MethodCallInfo rootMethodInfo = new MethodCallInfo(
+            method.getDeclaringType().getQualifiedName(),
+            method.getSimpleName(),
+            method.getSignature(),
+            "Method Entry", // This isn't a call but the entry point of analysis for this method
+            (method.getBody() != null) ? method.getBody().prettyprint() : ""
+        );
+        callStack.push(rootMethodInfo); // Push the root method onto the stack
+
+        if (body != null) {
+            scan(body); // Start scanning the method body
+        }
+
+        callStack.pop(); // Pop the root method after scanning is complete
+        return rootMethodInfo; // Return the fully populated root method info
+    }
+
+    // --- Overridden visit methods for data flow analysis ---
+
+    @Override
+    public <T> void visitCtLocalVariable(CtLocalVariable<T> localVariable) {
+        if (!callStack.isEmpty()) {
+            String varName = localVariable.getSimpleName();
+            CtExpression<?> assignment = localVariable.getAssignment();
+            if (assignment != null) {
+                ParameterFlowInfo tracedOrigin = getTracedFlowForExpression(assignment);
+                if (tracedOrigin != null) {
+                    ParameterFlowInfo newFlow = new ParameterFlowInfo(
+                        tracedOrigin.parameterName,
+                        tracedOrigin.parameterOriginalType,
+                        tracedOrigin.flowOriginType,
+                        tracedOrigin.flowOriginDescription,
+                        tracedOrigin.flowOriginRawExpression
+                    );
+                    newFlow.transformations.addAll(tracedOrigin.transformations);
+                    newFlow.addTransformation("assigned to local variable " + varName + " = " + assignment.prettyprint());
+                    currentlyTracedFlows.put(localVariable.prettyprint(), newFlow);
+                    currentlyTracedFlows.put(varName, newFlow);
+                }
+                // Add assignment info to the current method call on the stack
+                callStack.peek().addAssignment(new VariableAssignmentInfo(
+                    varName,
+                    assignment.prettyprint(),
+                    localVariable.getPosition().getSnippet()
+                ));
+            }
+        }
+        super.visitCtLocalVariable(localVariable);
+    }
+
+    @Override
+    public <T> void visitCtAssignment(CtAssignment<T, ?> assign) {
+        if (!callStack.isEmpty()) {
+            String assignedToExpression = assign.getAssigned().prettyprint();
+            CtExpression<?> assignedValueExpression = assign.getAssignment();
+
+            ParameterFlowInfo tracedOrigin = getTracedFlowForExpression(assignedValueExpression);
+            if (tracedOrigin != null) {
+                ParameterFlowInfo newFlow = new ParameterFlowInfo(
+                    tracedOrigin.parameterName,
+                    tracedOrigin.parameterOriginalType,
+                    tracedOrigin.flowOriginType,
+                    tracedOrigin.flowOriginDescription,
+                    tracedOrigin.flowOriginRawExpression
+                );
+                newFlow.transformations.addAll(tracedOrigin.transformations);
+                newFlow.addTransformation("assigned to " + assignedToExpression + " = " + assignedValueExpression.prettyprint());
+                currentlyTracedFlows.put(assignedToExpression, newFlow);
+                if (assign.getAssigned() instanceof CtVariableWrite) {
+                     currentlyTracedFlows.put(((CtVariableWrite<?>)assign.getAssigned()).getVariable().getSimpleName(), newFlow);
+                } else if (assign.getAssigned() instanceof CtFieldWrite) {
+                    // Handle field assignments
+                    CtFieldWrite<?> fieldWrite = (CtFieldWrite<?>) assign.getAssigned();
+                    currentlyTracedFlows.put(fieldWrite.getVariable().getSimpleName(), newFlow);
+                }
+            }
+            // Add assignment info to the current method call on the stack
+            callStack.peek().addAssignment(new VariableAssignmentInfo(
+                assignedToExpression,
+                assignedValueExpression.prettyprint(),
+                assign.getPosition().getSnippet()
+            ));
+        }
+        super.visitCtAssignment(assign);
+    }
+
+    @Override
+    public <T> void visitCtInvocation(CtInvocation<T> invocation) {
+        if (!callStack.isEmpty()) {
+            CtExecutableReference<?> invokedMethodRef = invocation.getExecutable();
+            CtTypeReference<?> declaringTypeRef = invokedMethodRef.getDeclaringType();
+
+            MethodCallInfo callInfo = new MethodCallInfo(
+                declaringTypeRef != null ? declaringTypeRef.getQualifiedName() : "unknown",
+                invokedMethodRef.getSimpleName(),
+                invokedMethodRef.getSignature(),
+                invocation.prettyprint(),
+                null // Body will be set if resolved
+            );
+
+            // Push the current call onto the stack before visiting its children.
+            // This ensures that any assignments/conditions *within* this method's context
+            // are associated with this `callInfo`.
+            callStack.push(callInfo);
+
+            // Check if it's a repository call
+            if (isRepositoryType(declaringTypeRef)) {
+                CtMethod<?> targetRepositoryMethod = (CtMethod<?>) invokedMethodRef.getDeclaration();
+                if (targetRepositoryMethod != null) {
+                    callInfo.methodBody = targetRepositoryMethod.getBody() != null ? targetRepositoryMethod.getBody().prettyprint() : "";
+                    analyzeRepositoryCall(invocation, targetRepositoryMethod, callInfo);
+                }
+            } else {
+                // Not a repository, but a method call. Try to follow it (inter-procedural)
+                CtMethod<?> targetMethod = (CtMethod<?>) invokedMethodRef.getDeclaration();
+                if (targetMethod != null && targetMethod.getBody() != null) {
+                    callInfo.methodBody = targetMethod.getBody().prettyprint();
+
+                    // Recursively analyze the invoked method's body.
+                    // Pass the arguments that are being traced from the caller's context.
+                    List<ParameterFlowInfo> argumentsToTraceInCalledMethod = new ArrayList<>();
+                    List<CtExpression<?>> invocationArguments = invocation.getArguments();
+                    List<CtParameter<?>> targetMethodParameters = targetMethod.getParameters();
+
+                    for (int i = 0; i < invocationArguments.size(); i++) {
+                        CtExpression<?> argExpression = invocationArguments.get(i);
+                        ParameterFlowInfo originOfArg = getTracedFlowForExpression(argExpression);
+
+                        if (originOfArg != null && i < targetMethodParameters.size()) {
+                            CtParameter<?> targetParam = targetMethodParameters.get(i);
+                            ParameterFlowInfo flowForCalledParam = new ParameterFlowInfo(
+                                targetParam.getSimpleName(),
+                                targetParam.getType().prettyprint(),
+                                originOfArg.flowOriginType,
+                                originOfArg.flowOriginDescription,
+                                originOfArg.flowOriginRawExpression
+                            );
+                            flowForCalledParam.transformations.addAll(originOfArg.transformations);
+                            flowForCalledParam.addTransformation("passed as argument to " + invokedMethodRef.getSimpleName() + "() parameter " + targetParam.getSimpleName());
+                            argumentsToTraceInCalledMethod.add(flowForCalledParam);
+                        }
+                    }
+                    // Recursively call analyzeMethodBody for the target method
+                    // No need to pass class fields here as we are already within a method context.
+                    // The field resolution for @Value happens at the top level of analyzeMethodBody.
+                    MethodCallInfo nestedAnalysis = analyzeMethodBody(targetMethod, targetMethod.getBody(), argumentsToTraceInCalledMethod, new ArrayList<>());
+                    callInfo.addNestedCall(nestedAnalysis);
+                }
+            }
+
+            // Pop the current call after processing its children.
+            callStack.pop();
+            // Add the completely analyzed callInfo to the *parent* method's nested calls.
+            if (!callStack.isEmpty()) {
+                callStack.peek().addNestedCall(callInfo);
+            }
+        }
+        super.visitCtInvocation(invocation); // Continue scanning children of the invocation
+    }
+
+    @Override
+    public void visitCtIf(CtIf ctIf) {
+        if (!callStack.isEmpty()) {
+            callStack.peek().addCondition(new ConditionInfo(
+                "IF",
+                ctIf.getCondition().prettyprint(),
+                ctIf.getPosition().getSnippet()
+            ));
+        }
+        super.visitCtIf(ctIf); // Continue scanning inside if/else branches
+    }
+
+    @Override
+    public void visitCtTry(CtTry ctTry) {
+        if (!callStack.isEmpty()) {
+            callStack.peek().addCondition(new ConditionInfo(
+                "TRY_BLOCK",
+                "", // No specific expression for try block itself
+                ctTry.getPosition().getSnippet()
+            ));
+        }
+        super.visitCtTry(ctTry); // Continue scanning inside try/catch/finally blocks
+    }
+
+    @Override
+    public <T extends CtCatch> void visitCtCatch(T ctCatch) {
+        if (!callStack.isEmpty()) {
+            callStack.peek().addCondition(new ConditionInfo(
+                "CATCH_CLAUSE",
+                ctCatch.getParameter().getType().prettyprint() + " " + ctCatch.getParameter().getSimpleName(),
+                ctCatch.getPosition().getSnippet()
+            ));
+        }
+        super.visitCtCatch(ctCatch);
+    }
+
+    // --- Helper Methods for Tracing and Repository Analysis ---
+
+    /**
+     * Attempts to get a ParameterFlowInfo if the given expression is currently being traced.
+     * This method needs to handle various CtExpression types to follow the data flow accurately.
+     */
+    private ParameterFlowInfo getTracedFlowForExpression(CtExpression<?> expr) {
+        // Direct variable read (local variable or field)
+        if (expr instanceof CtVariableRead) {
+            CtVariableRead<?> varRead = (CtVariableRead<?>) expr;
+            CtVariable<?> declaredVar = varRead.getVariable().getDeclaration();
+
+            if (declaredVar != null) {
+                // Check if it's a local variable read
+                ParameterFlowInfo flow = currentlyTracedFlows.get(declaredVar.prettyprint());
+                if (flow == null) {
+                    // Try by simple name, e.g., if a.x was assigned to 'y', and now 'y' is read.
+                    flow = currentlyTracedFlows.get(declaredVar.getSimpleName());
+                }
+
+                if (flow != null) {
+                    return flow;
+                } else if (declaredVar instanceof CtField) {
+                    // It's a field read. Check if this field itself is being traced (e.g., from @Value)
+                    // We already added @Value fields to `currentlyTracedFlows` at the start of `analyzeMethodBody`.
+                    return currentlyTracedFlows.get(declaredVar.getSimpleName());
+                }
+            }
+        }
+        // Method invocation as an expression (e.g., `someValue.toLowerCase()`)
+        else if (expr instanceof CtInvocation) {
+            CtInvocation<?> invocation = (CtInvocation<?>) expr;
+            // Get the origin of the target of the invocation
+            if (invocation.getTarget() != null) {
+                ParameterFlowInfo targetFlow = getTracedFlowForExpression(invocation.getTarget());
+                if (targetFlow != null) {
+                    // Create a new flow representing the transformation
+                    ParameterFlowInfo newFlow = new ParameterFlowInfo(
+                        targetFlow.parameterName,
+                        targetFlow.parameterOriginalType,
+                        targetFlow.flowOriginType,
+                        targetFlow.flowOriginDescription,
+                        targetFlow.flowOriginRawExpression
+                    );
+                    newFlow.transformations.addAll(targetFlow.transformations);
+                    newFlow.addTransformation(invocation.getExecutable().getSimpleName() + "()");
+                    // Store this new flow for future tracing
+                    currentlyTracedFlows.put(invocation.prettyprint(), newFlow);
+                    return newFlow;
+                }
+            }
+        }
+        // Binary operator (e.g., `x + 5`)
+        else if (expr instanceof CtBinaryOperator) {
+            CtBinaryOperator<?> binaryOp = (CtBinaryOperator<?>) expr;
+            ParameterFlowInfo leftOperandFlow = getTracedFlowForExpression(binaryOp.getLeftOperand());
+            if (leftOperandFlow != null) {
+                ParameterFlowInfo newFlow = new ParameterFlowInfo(
+                    leftOperandFlow.parameterName,
+                    leftOperandFlow.parameterOriginalType,
+                    leftOperandFlow.flowOriginType,
+                    leftOperandFlow.flowOriginDescription,
+                    leftOperandFlow.flowOriginRawExpression
+                );
+                newFlow.transformations.addAll(leftOperandFlow.transformations);
+                newFlow.addTransformation(binaryOp.getKind().toString() + " " + binaryOp.getRightOperand().prettyprint());
+                currentlyTracedFlows.put(binaryOp.prettyprint(), newFlow);
+                return newFlow;
+            }
+            ParameterFlowInfo rightOperandFlow = getTracedFlowForExpression(binaryOp.getRightOperand());
+            if (rightOperandFlow != null) {
+                ParameterFlowInfo newFlow = new ParameterFlowInfo(
+                    rightOperandFlow.parameterName,
+                    rightOperandFlow.parameterOriginalType,
+                    rightOperandFlow.flowOriginType,
+                    rightOperandFlow.flow
