@@ -1,0 +1,14 @@
+// VariableAssignmentInfo.java
+package com.example.analyzer.model;
+
+public class VariableAssignmentInfo {
+    public String variableName;
+    public String assignedValueExpression; // e.g., "param.toLowerCase()"
+    public String lineContent; // The full line where assignment occurred
+
+    public VariableAssignmentInfo(String variableName, String assignedValueExpression, String lineContent) {
+        this.variableName = variableName;
+        this.assignedValueExpression = assignedValueExpression;
+        this.lineContent = lineContent;
+    }
+}
