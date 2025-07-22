@@ -1,0 +1,69 @@
+package com.example.analyzer;
+
+import com.example.analyzer.core.AnalysisContext;
+import com.example.analyzer.model.AnalysisResult;
+import com.example.analyzer.processor.ControllerProcessor;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import spoon.Launcher;
+import spoon.reflect.CtModel;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.Scanner;
+
+public class App {
+
+    public static void main(String[] args) {
+        if (args.length != 1) {
+            System.out.println("Usage: java -jar target/spring-code-analyzer-1.0-SNAPSHOT.jar <path/to/your/spring/boot/project/src/main/java>");
+            return;
+        }
+
+        String projectSourcePath = args[0];
+        File projectDir = new File(projectSourcePath);
+        if (!projectDir.exists() || !projectDir.isDirectory()) {
+            System.err.println("Error: Provided path is not a valid directory: " + projectSourcePath);
+            return;
+        }
+
+        System.out.println("Building Spoon model for: " + projectSourcePath);
+        Launcher launcher = new Launcher();
+        launcher.addInputResource(projectSourcePath);
+        launcher.getEnvironment().setNoClasspath(true); // Don't try to load classpath for simplicity
+        launcher.getEnvironment().setAutoImports(true); // Enable auto-imports for cleaner prettyprinting
+
+        try {
+            launcher.buildModel();
+            CtModel model = launcher.getModel();
+            System.out.println("Spoon model built successfully. Number of types: " + model.getAllTypes().size());
+
+            // Initialize the shared context
+            AnalysisContext context = new AnalysisContext(projectSourcePath, model);
+
+            // Register and process with our main processor
+            model.processWith(new ControllerProcessor(context));
+
+            // Get the final analysis results
+            AnalysisResult finalResult = context.getAnalysisResult();
+
+            // Serialize to JSON
+            ObjectMapper mapper = new ObjectMapper();
+            mapper.enable(SerializationFeature.INDENT_OUTPUT); // Pretty print JSON
+
+            String jsonOutput = mapper.writeValueAsString(finalResult);
+            System.out.println("\n--- Analysis Results (JSON) ---");
+            System.out.println(jsonOutput);
+
+            // Optional: Save to file
+            // try (java.io.FileWriter file = new java.io.FileWriter("analysis_results.json")) {
+            //     file.write(jsonOutput);
+            //     System.out.println("\nResults saved to analysis_results.json");
+            // }
+
+        } catch (Exception e) {
+            System.err.println("An error occurred during analysis: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+}
