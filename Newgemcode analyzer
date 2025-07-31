@@ -1,0 +1,340 @@
+package com.example;
+
+import com.example.demo.Product;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.jpa.repository.Query;
+import spoon.Launcher;
+import spoon.reflect.CtModel;
+import spoon.reflect.code.*;
+import spoon.reflect.declaration.*;
+import spoon.reflect.factory.Factory;
+import spoon.reflect.path.CtRole;
+import spoon.reflect.reference.CtExecutableReference;
+import spoon.reflect.reference.CtTypeReference;
+import spoon.reflect.visitor.filter.TypeFilter;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.file.Files; // Import this
+import java.nio.file.Path;   // Import this
+import java.nio.file.Paths;  // Import this
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class SpringBootAnalyzer {
+
+    // Simulating a property file loader
+    private static final Map<String, String> properties = new HashMap<>();
+
+    static {
+        // Load properties from application.properties
+        try (FileInputStream fis = new FileInputStream("src/main/resources/application.properties")) {
+            Properties props = new Properties();
+            props.load(fis);
+            props.forEach((key, value) -> properties.put(key.toString(), value.toString()));
+        } catch (IOException e) {
+            System.err.println("Error loading application.properties: " + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        String projectPath = "./src/main/java/com/example/demo"; // Path to your Spring Boot source code
+        String outputFilePath = "./analysis_output.json"; // Define the output file path here
+
+        Launcher launcher = new Launcher();
+        launcher.addInputResource(projectPath);
+        launcher.getEnvironment().setAutoImports(true);
+        launcher.getEnvironment().setNoClasspath(false);
+        launcher.getEnvironment().setShouldCompile(true); // Crucial for type resolution
+
+        CtModel model = launcher.buildModel();
+
+        List<Map<String, Object>> analysisResults = new ArrayList<>();
+
+        model.getElements(new TypeFilter<>(CtClass.class)).forEach(ctClass -> {
+            if (ctClass.hasAnnotation(org.springframework.web.bind.annotation.RestController.class) ||
+                ctClass.hasAnnotation(org.springframework.stereotype.Service.class)) {
+                Map<String, Object> classAnalysis = analyzeClass(ctClass, model.getFactory());
+                if (classAnalysis != null) {
+                    analysisResults.add(classAnalysis);
+                }
+            }
+        });
+
+        // Convert to JSON and write to file
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        try {
+            Path outputPath = Paths.get(outputFilePath);
+            mapper.writeValue(Files.newBufferedWriter(outputPath), analysisResults);
+            System.out.println("Analysis results written to: " + outputPath.toAbsolutePath());
+        } catch (IOException e) {
+            System.err.println("Error writing JSON to file: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static Map<String, Object> analyzeClass(CtClass<?> ctClass, Factory factory) {
+        Map<String, Object> classDetails = new LinkedHashMap<>();
+        classDetails.put("className", ctClass.getQualifiedName());
+        classDetails.put("classType", ctClass.isInterface() ? "Interface" : "Class");
+        classDetails.put("annotations", ctClass.getAnnotations().stream()
+                .map(a -> a.getAnnotationType().getQualifiedName())
+                .collect(Collectors.toList()));
+
+        List<Map<String, Object>> methods = new ArrayList<>();
+        ctClass.getMethods().forEach(ctMethod -> {
+            methods.add(analyzeMethod(ctMethod, factory));
+        });
+        classDetails.put("methods", methods);
+        return classDetails;
+    }
+
+    private static Map<String, Object> analyzeMethod(CtMethod<?> ctMethod, Factory factory) {
+        Map<String, Object> methodDetails = new LinkedHashMap<>();
+        methodDetails.put("methodName", ctMethod.getSimpleName());
+        methodDetails.put("returnType", ctMethod.getType().getQualifiedName());
+        methodDetails.put("visibility", ctMethod.getVisibility().toString().toLowerCase());
+
+        List<Map<String, Object>> parameters = new ArrayList<>();
+        ctMethod.getParameters().forEach(param -> {
+            Map<String, Object> paramDetails = new LinkedHashMap<>();
+            paramDetails.put("name", param.getSimpleName());
+            paramDetails.put("type", param.getType().getQualifiedName());
+            paramDetails.put("annotations", param.getAnnotations().stream()
+                    .map(a -> a.getAnnotationType().getQualifiedName())
+                    .collect(Collectors.toList()));
+            parameters.add(paramDetails);
+        });
+        methodDetails.put("parameters", parameters);
+
+        List<Map<String, Object>> methodBodyAnalysis = new ArrayList<>();
+        if (ctMethod.getBody() != null) {
+            Map<String, Object> initialVariableValues = new LinkedHashMap<>();
+            ctMethod.getParameters().forEach(p -> initialVariableValues.put(p.getSimpleName(), "parameter_input"));
+            methodBodyAnalysis.addAll(analyzeStatement(ctMethod.getBody(), factory, initialVariableValues, 0));
+        }
+        methodDetails.put("flow", methodBodyAnalysis);
+
+        return methodDetails;
+    }
+
+    private static List<Map<String, Object>> analyzeStatement(CtStatement statement, Factory factory, Map<String, Object> currentVariableValues, int depth) {
+        List<Map<String, Object>> flow = new ArrayList<>();
+
+        if (statement == null) {
+            return flow;
+        }
+
+        if (statement instanceof CtLocalVariable<?> ctLocalVariable) {
+            Map<String, Object> varDetails = new LinkedHashMap<>();
+            String varName = ctLocalVariable.getSimpleName();
+            varDetails.put("type", "VariableDeclaration");
+            varDetails.put("variableName", varName);
+            varDetails.put("variableType", ctLocalVariable.getType().getQualifiedName());
+            if (ctLocalVariable.getDefaultExpression() != null) {
+                String expression = ctLocalVariable.getDefaultExpression().toString();
+                varDetails.put("initialValueExpression", expression);
+                Object resolvedValue = resolveExpressionValue(ctLocalVariable.getDefaultExpression(), currentVariableValues);
+                if (resolvedValue != null) {
+                    currentVariableValues.put(varName, resolvedValue);
+                    varDetails.put("resolvedInitialValue", resolvedValue);
+                } else {
+                    currentVariableValues.put(varName, expression);
+                }
+            } else {
+                currentVariableValues.put(varName, null);
+            }
+            flow.add(varDetails);
+        } else if (statement instanceof CtAssignment<?, ?> ctAssignment) {
+            Map<String, Object> assignmentDetails = new LinkedHashMap<>();
+            assignmentDetails.put("type", "Assignment");
+            String assignedTo = ctAssignment.getAssigned().toString();
+            String assignedFromExpression = ctAssignment.getAssignment().toString();
+            assignmentDetails.put("assignedTo", assignedTo);
+            assignmentDetails.put("assignedFromExpression", assignedFromExpression);
+
+            Object resolvedValue = resolveExpressionValue(ctAssignment.getAssignment(), currentVariableValues);
+            if (resolvedValue != null) {
+                currentVariableValues.put(assignedTo, resolvedValue);
+                assignmentDetails.put("resolvedAssignedValue", resolvedValue);
+            } else {
+                currentVariableValues.put(assignedTo, assignedFromExpression);
+            }
+
+            if (ctAssignment.getAssignment() instanceof CtInvocation<?, ?> ctInvocation) {
+                Map<String, Object> invocationResult = analyzeInvocation(ctInvocation, factory, currentVariableValues, depth);
+                invocationResult.put("assignedToVariable", assignedTo);
+                flow.add(invocationResult);
+            } else {
+                flow.add(assignmentDetails);
+            }
+        }
+        else if (statement instanceof CtIf ctIf) {
+            Map<String, Object> ifDetails = new LinkedHashMap<>();
+            ifDetails.put("type", "IfCondition");
+            ifDetails.put("condition", ctIf.getCondition().toString());
+            Object resolvedCondition = resolveExpressionValue(ctIf.getCondition(), currentVariableValues);
+            if (resolvedCondition != null) {
+                ifDetails.put("resolvedCondition", resolvedCondition);
+            }
+
+            Map<String, Object> thenBlock = new LinkedHashMap<>();
+            thenBlock.put("blockType", "ThenBlock");
+            thenBlock.put("flow", analyzeStatement(ctIf.getThenStatement(), factory, new LinkedHashMap<>(currentVariableValues), depth + 1));
+            ifDetails.put("thenBlock", thenBlock);
+
+            if (ctIf.getElseStatement() != null) {
+                Map<String, Object> elseBlock = new LinkedHashMap<>();
+                elseBlock.put("blockType", "ElseBlock");
+                elseBlock.put("flow", analyzeStatement(ctIf.getElseStatement(), factory, new LinkedHashMap<>(currentVariableValues), depth + 1));
+                ifDetails.put("elseBlock", elseBlock);
+            }
+            flow.add(ifDetails);
+        }
+        else if (statement instanceof CtInvocation<?, ?> ctInvocation) {
+            if (!(statement.getParent() instanceof CtAssignment)) {
+                flow.add(analyzeInvocation(ctInvocation, factory, currentVariableValues, depth));
+            }
+        }
+        else if (statement instanceof CtLoop ctLoop) {
+            Map<String, Object> loopDetails = new LinkedHashMap<>();
+            loopDetails.put("type", "Loop");
+            loopDetails.put("loopKind", statement.getRoleInParent().name());
+            loopDetails.put("condition", ctLoop.getLoopingExpression() != null ? ctLoop.getLoopingExpression().toString() : "N/A");
+            loopDetails.put("bodyFlow", analyzeStatement(ctLoop.getBody(), factory, new LinkedHashMap<>(currentVariableValues), depth + 1));
+            flow.add(loopDetails);
+        }
+        else if (statement instanceof CtBlock<?> ctBlock) {
+            for (CtStatement stmt : ctBlock.getStatements()) {
+                flow.addAll(analyzeStatement(stmt, factory, currentVariableValues, depth));
+            }
+        }
+        else {
+            Map<String, Object> generalStatement = new LinkedHashMap<>();
+            generalStatement.put("type", statement.getClass().getSimpleName().replace("Ct", ""));
+            generalStatement.put("statement", statement.toString());
+            flow.add(generalStatement);
+        }
+
+        return flow;
+    }
+
+    private static Map<String, Object> analyzeInvocation(CtInvocation<?, ?> ctInvocation, Factory factory, Map<String, Object> currentVariableValues, int depth) {
+        Map<String, Object> invocationDetails = new LinkedHashMap<>();
+        invocationDetails.put("type", "MethodCall");
+        invocationDetails.put("methodName", ctInvocation.getExecutable().getSimpleName());
+        invocationDetails.put("returnType", ctInvocation.getType() != null ? ctInvocation.getType().getQualifiedName() : "void");
+        invocationDetails.put("targetObjectExpression", ctInvocation.getTarget() != null ? ctInvocation.getTarget().toString() : "static_or_this");
+
+        List<Map<String, Object>> arguments = new ArrayList<>();
+        for (CtExpression<?> arg : ctInvocation.getArguments()) {
+            Map<String, Object> argDetails = new LinkedHashMap<>();
+            argDetails.put("expression", arg.toString());
+            Object resolvedArgValue = resolveExpressionValue(arg, currentVariableValues);
+            if (resolvedArgValue != null) {
+                argDetails.put("resolvedValue", resolvedArgValue);
+            }
+            arguments.add(argDetails);
+        }
+        invocationDetails.put("arguments", arguments);
+
+        CtExecutable<?> invokedMethodDeclaration = ctInvocation.getExecutable().getDeclaration();
+        if (invokedMethodDeclaration instanceof CtMethod<?> ctMethodDeclaration) {
+            invocationDetails.put("calledMethodClass", ctMethodDeclaration.getParent(CtClass.class).getQualifiedName());
+
+            Map<String, Object> calledMethodFlow = new LinkedHashMap<>();
+            calledMethodFlow.put("methodName", ctMethodDeclaration.getSimpleName());
+            calledMethodFlow.put("returnType", ctMethodDeclaration.getType().getQualifiedName());
+
+            Map<String, Object> calledMethodInitialVars = new LinkedHashMap<>();
+            List<CtParameter<?>> params = ctMethodDeclaration.getParameters();
+            for (int i = 0; i < arguments.size() && i < params.size(); i++) {
+                calledMethodInitialVars.put(params.get(i).getSimpleName(), arguments.get(i).get("resolvedValue"));
+            }
+
+            if (ctMethodDeclaration.getBody() != null) {
+                calledMethodFlow.put("flow", analyzeStatement(ctMethodDeclaration.getBody(), factory, new LinkedHashMap<>(calledMethodInitialVars), depth + 1));
+            } else {
+                calledMethodFlow.put("flow", "Method body not available (e.g., interface method, external library)");
+            }
+            invocationDetails.put("calledMethodFlow", calledMethodFlow);
+        } else {
+            invocationDetails.put("calledMethodClass", "External/Unknown");
+            invocationDetails.put("calledMethodFlow", "Not available (e.g., JDK method, external library)");
+        }
+
+
+        if (ctInvocation.getTarget() != null && ctInvocation.getTarget().getType() != null) {
+            CtTypeReference<?> targetType = ctInvocation.getTarget().getType();
+            if (targetType.isSubtypeOf(factory.Type().createReference("org.springframework.data.jpa.repository.JpaRepository"))) {
+                invocationDetails.put("repositoryCall", true);
+                CtExecutable<?> invokedRepoMethod = ctInvocation.getExecutable().getDeclaration();
+                if (invokedRepoMethod instanceof CtMethod<?> repoMethod) {
+                    Map<String, Object> repoMethodDetails = analyzeRepositoryMethod(repoMethod);
+                    if (repoMethodDetails != null) {
+                        invocationDetails.put("repositoryMethod", repoMethodDetails);
+                    }
+                }
+            }
+        }
+        return invocationDetails;
+    }
+
+    private static Map<String, Object> analyzeRepositoryMethod(CtMethod<?> repoMethod) {
+        Map<String, Object> repoMethodDetails = new LinkedHashMap<>();
+        repoMethodDetails.put("name", repoMethod.getSimpleName());
+
+        CtAnnotation<?> queryAnnotation = repoMethod.getAnnotation(Query.class);
+        if (queryAnnotation != null) {
+            String queryString = "";
+            CtExpression<?> value = queryAnnotation.getValue("value");
+            if (value instanceof CtLiteral) {
+                queryString = ((CtLiteral<String>) value).getValue();
+            } else if (value instanceof CtFieldRead ctFieldRead) {
+                if (ctFieldRead.getVariable().getSimpleName().equals("product.query")) {
+                    queryString = "${product.query}";
+                } else {
+                    queryString = "Could not resolve @Query value from field: " + ctFieldRead.getVariable().getSimpleName();
+                }
+            }
+
+            if (queryString.startsWith("${") && queryString.endsWith("}")) {
+                String propKey = queryString.substring(2, queryString.length() - 1);
+                String resolvedQuery = properties.getOrDefault(propKey, "PROPERTY_NOT_FOUND(" + propKey + ")");
+                repoMethodDetails.put("queryAnnotation", Map.of(
+                        "value", queryString,
+                        "resolvedQuery", resolvedQuery
+                ));
+            } else {
+                repoMethodDetails.put("queryAnnotation", Map.of("value", queryString));
+            }
+
+            repoMethodDetails.put("inferredTableMapping", "Requires SQL/JPQL parsing and schema knowledge.");
+        } else {
+            repoMethodDetails.put("derivedQuery", "Inferred from method name: " + repoMethod.getSimpleName());
+            repoMethodDetails.put("inferredTableMapping", "Requires derived query parsing and schema knowledge.");
+        }
+
+        return repoMethodDetails;
+    }
+
+    private static Object resolveExpressionValue(CtExpression<?> expression, Map<String, Object> currentVariableValues) {
+        if (expression instanceof CtLiteral<?> ctLiteral) {
+            return ctLiteral.getValue();
+        } else if (expression instanceof CtVariableRead<?> ctVariableRead) {
+            String varName = ctVariableRead.getVariable().getSimpleName();
+            return currentVariableValues.getOrDefault(varName, null);
+        } else if (expression instanceof CtBinaryOperator<?> ctBinaryOperator) {
+            Object left = resolveExpressionValue(ctBinaryOperator.getLeftHandOperand(), currentVariableValues);
+            Object right = resolveExpressionValue(ctBinaryOperator.getRightHandOperand(), currentVariableValues);
+            if (left instanceof String && right instanceof String && ctBinaryOperator.getKind() == BinaryOperatorKind.PLUS) {
+                return left.toString() + right.toString();
+            }
+        }
+        return null;
+    }
+}
